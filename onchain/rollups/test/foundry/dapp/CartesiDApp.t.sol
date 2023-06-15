@@ -11,12 +11,15 @@ import {Proof} from "contracts/dapp/ICartesiDApp.sol";
 import {IConsensus} from "contracts/consensus/IConsensus.sol";
 import {OutputValidityProof, LibOutputValidation} from "contracts/library/LibOutputValidation.sol";
 import {OutputEncoding} from "contracts/common/OutputEncoding.sol";
+import {ComplexVouchers} from "contracts/outputs/ComplexVouchers.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 
 import {LibServerManager} from "../util/LibServerManager.sol";
+import {SimpleContract} from "../util/SimpleContract.sol";
+
 import {SimpleConsensus} from "../util/SimpleConsensus.sol";
 import {SimpleERC20} from "../util/SimpleERC20.sol";
 import {SimpleERC721} from "../util/SimpleERC721.sol";
@@ -27,12 +30,6 @@ import "forge-std/console.sol";
 contract EtherReceiver {
     receive() external payable {}
 }
-
-// Outputs
-// 0: notice 0xfafafafa
-// 1: voucher ERC-20 transfer
-// 2: voucher ETH withdrawal
-// 3: voucher ERC-721 transfer
 
 contract CartesiDAppTest is TestBase {
     using LibServerManager for LibServerManager.RawFinishEpochResponse;
@@ -48,6 +45,8 @@ contract CartesiDAppTest is TestBase {
     IERC20 erc20Token;
     IERC721 erc721Token;
     IERC721Receiver erc721Receiver;
+    ComplexVouchers complex;
+    SimpleContract simple;
 
     struct Voucher {
         address destination;
@@ -312,7 +311,7 @@ contract CartesiDAppTest is TestBase {
         // so the proof would succeed but the input would be out of bounds
         vm.mockCall(
             address(consensus),
-            abi.encodeWithSelector(IConsensus.getClaim.selector),
+            abi.encodeWithSelector(IConsensus.getClaim.selector, dapp, proof.context),
             abi.encode(epochHash, _inputIndex, _inputIndex)
         );
 
@@ -481,6 +480,82 @@ contract CartesiDAppTest is TestBase {
         executeVoucher(voucher, proof);
     }
 
+    function testExpirableComplex(
+        uint256 _inputIndex,
+        uint256 _numInputsAfter
+    ) public {
+        Voucher memory voucher = getVoucher(4);
+        Proof memory proof = setupVoucherProof(4, _inputIndex, _numInputsAfter);
+
+        bool success = executeVoucher(voucher, proof);
+
+        assertEq(success, true);
+    }
+
+    function testTargetedComplex(
+        uint256 _inputIndex,
+        uint256 _numInputsAfter
+    ) public {
+        Voucher memory voucher = getVoucher(5);
+        Proof memory proof = setupVoucherProof(5, _inputIndex, _numInputsAfter);
+
+        bool success = executeVoucher(voucher, proof);
+
+        assertEq(success, true);
+    }
+
+    function testPaidComplex(
+        uint256 _inputIndex,
+        uint256 _numInputsAfter
+    ) public {
+        Voucher memory voucher = getVoucher(6);
+        Proof memory proof = setupVoucherProof(6, _inputIndex, _numInputsAfter);
+
+        vm.deal(address(complex), transferAmount);
+
+        bool success = executeVoucher(voucher, proof);
+
+        assertEq(success, true);
+    }
+
+    function testFutureComplex(
+        uint256 _inputIndex,
+        uint256 _numInputsAfter
+    ) public {
+        Voucher memory voucher = getVoucher(7);
+        Proof memory proof = setupVoucherProof(7, _inputIndex, _numInputsAfter);
+
+        bool success = executeVoucher(voucher, proof);
+
+        assertEq(success, false);
+
+        vm.warp(block.timestamp + 2 hours);
+
+        success = executeVoucher(voucher, proof);
+
+        assertEq(success, true);
+    }
+
+    function testOrderedComplex() public {
+        Voucher memory voucher8 = getVoucher(8);
+        Proof memory proof8 = setupVoucherProof(8, 8, 0);
+
+        Voucher memory voucher9 = getVoucher(9);
+        Proof memory proof9 = setupVoucherProof(9, 9, 0);
+
+        bool success = executeVoucher(voucher9, proof9);
+
+        assertEq(success, false);
+
+        success = executeVoucher(voucher8, proof8);
+
+        assertEq(success, true);
+
+        success = executeVoucher(voucher9, proof9);
+
+        assertEq(success, true);
+    }
+
     // test migration
 
     function testMigrateToConsensus(
@@ -549,7 +624,7 @@ contract CartesiDAppTest is TestBase {
         // mock the consensus contract to return the right epoch hash
         vm.mockCall(
             address(consensus),
-            abi.encodeWithSelector(IConsensus.getClaim.selector),
+            abi.encodeWithSelector(IConsensus.getClaim.selector, dapp, _proof.context),
             abi.encode(epochHash, firstInputIndex, lastInputIndex)
         );
     }
@@ -560,6 +635,8 @@ contract CartesiDAppTest is TestBase {
         erc20Token = deployERC20Deterministically();
         erc721Token = deployERC721Deterministically();
         erc721Receiver = deployERC721ReceiverDeterministically();
+        complex = deployComplexVouchersDeterministically(address(dapp));
+        simple = deploySimpleContractDeterministically();
     }
 
     function deployDAppDeterministically() internal returns (CartesiDApp) {
@@ -588,6 +665,21 @@ contract CartesiDAppTest is TestBase {
     {
         vm.prank(tokenOwner);
         return new SimpleERC721Receiver{salt: salt}();
+    }
+
+    function deployComplexVouchersDeterministically(
+        address _dapp
+    ) internal returns (ComplexVouchers) {
+        vm.prank(dappOwner);
+        return new ComplexVouchers{salt: salt}(_dapp);
+    }
+
+    function deploySimpleContractDeterministically()
+        internal
+        returns (SimpleContract)
+    {
+        vm.prank(dappOwner);
+        return new SimpleContract{salt: salt}();
     }
 
     function addVoucher(
@@ -622,22 +714,162 @@ contract CartesiDAppTest is TestBase {
     }
 
     function generateOutputs() internal {
+        addDummyNotice();
+        addERC20TransferVoucher();
+        addEtherTransferVoucher();
+        addERC721TransferVoucher();
+        addExpirableVoucher();
+        addTargetedVoucher();
+        addPaidVoucher();
+        addFutureVoucher();
+        addIncVoucher();
+        addOrderedVoucher();
+    }
+
+    function addDummyNotice() internal {
         addNotice(abi.encode(bytes4(0xfafafafa)));
+    }
+
+    function addERC20TransferVoucher() internal {
         addVoucher(address(erc20Token), abi.encodeWithSelector(
             IERC20.transfer.selector,
             recipient,
             transferAmount
         ));
+    }
+
+    function addEtherTransferVoucher() internal {
         addVoucher(address(dapp), abi.encodeWithSelector(
             CartesiDApp.withdrawEther.selector,
             recipient,
             transferAmount
         ));
+    }
+
+    function addERC721TransferVoucher() internal {
         addVoucher(address(erc721Token), abi.encodeWithSignature(
             "safeTransferFrom(address,address,uint256)",
             dapp,
             erc721Receiver,
             tokenId
+        ));
+    }
+    
+    function addExpirableVoucher() internal {
+        address[] memory arrayAddress = new address[](1);
+        bytes[] memory arrayPayloads = new bytes[](1);
+
+        arrayAddress[0] = address(complex);
+
+        arrayPayloads[0] = (
+            abi.encodeWithSignature(
+                "checkExpirableVoucher(address,bytes,uint256)",
+                simple,
+                abi.encodeWithSelector(SimpleContract.inc.selector),
+                block.timestamp + 1 hours
+            )
+        );
+
+        addVoucher(address(complex), abi.encodeWithSignature(
+            "executeAtomicVoucher(bytes[],address[])",
+            arrayPayloads,
+            arrayAddress
+        ));
+    }
+
+    function addTargetedVoucher() internal {
+        address[] memory arrayAddress = new address[](1);
+        address[] memory possibleAddress = new address[](1);
+        bytes[] memory arrayPayloads = new bytes[](1);
+
+        possibleAddress[0] = tx.origin;
+
+        arrayAddress[0] = address(complex);
+
+        arrayPayloads[0] = (
+            abi.encodeWithSignature(
+                "checkTargetedVoucher(address,bytes,address[])",
+                simple,
+                abi.encodeWithSelector(SimpleContract.inc.selector),
+                possibleAddress
+            )
+        );
+
+        addVoucher(address(complex), abi.encodeWithSignature(
+            "executeAtomicVoucher(bytes[],address[])",
+            arrayPayloads,
+            arrayAddress
+        ));
+    }
+
+    function addPaidVoucher() internal {
+        address[] memory arrayAddress = new address[](1);
+        bytes[] memory arrayPayloads = new bytes[](1);
+
+        arrayAddress[0] = address(complex);
+
+        arrayPayloads[0] = (
+            abi.encodeWithSignature(
+                "checkPaidVoucher(address,bytes,uint256)",
+                simple,
+                abi.encodeWithSelector(SimpleContract.inc.selector),
+                transferAmount
+            )
+        );
+
+        addVoucher(address(complex), abi.encodeWithSignature(
+            "executeAtomicVoucher(bytes[],address[])",
+            arrayPayloads,
+            arrayAddress
+        ));
+    }
+
+    function addFutureVoucher() internal {
+        address[] memory arrayAddress = new address[](1);
+        bytes[] memory arrayPayloads = new bytes[](1);
+
+        arrayAddress[0] = address(complex);
+
+        arrayPayloads[0] = (
+            abi.encodeWithSignature(
+                "checkFutureVoucher(address,bytes,uint256)",
+                simple,
+                abi.encodeWithSelector(SimpleContract.inc.selector),
+                block.timestamp + 1 hours
+            )
+        );
+
+        addVoucher(address(complex), abi.encodeWithSignature(
+            "executeAtomicVoucher(bytes[],address[])",
+            arrayPayloads,
+            arrayAddress
+        ));
+    }
+
+    function addIncVoucher() internal {
+        addVoucher(address(simple), abi.encodeWithSelector(SimpleContract.inc.selector));
+    }
+
+    function addOrderedVoucher() internal {
+        address[] memory arrayAddress = new address[](1);
+        bytes[] memory arrayPayloads = new bytes[](1);
+
+        arrayAddress[0] = address(complex);
+
+        arrayPayloads[0] = (
+            abi.encodeWithSignature(
+                "checkOrderedVoucher(address,bytes,uint256,uint256)",
+                simple,
+                abi.encodeWithSelector(SimpleContract.inc.selector),
+                8,
+                0
+            )
+        );
+
+        addVoucher(address(complex), abi.encodeWithSignature(
+            "executeAtomicVoucher(bytes[],address[])",
+            arrayPayloads,
+            arrayAddress
         ));
     }
 
