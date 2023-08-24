@@ -15,6 +15,8 @@ pragma solidity ^0.8.8;
 import {ICartesiDApp} from "../dapp/ICartesiDApp.sol";
 
 /// @title Complex Vouchers
+/// @notice All complex vouchers functions can only be called by the ComplexVoucher contract itself except for the
+/// AtomicVoucher function that can only be called by the Cartesi Dapp contract.
 contract ComplexVouchers {
     address internal immutable dapp;
 
@@ -35,6 +37,12 @@ contract ComplexVouchers {
         dapp = _dappAddress;
     }
 
+    modifier onlyDApp() {
+        require(msg.sender == dapp);
+        _;
+    }
+
+    /// check for valid addresses for targeted vouchers
     function _isAddressValid(
         address[] calldata validAddress
     ) public view returns (bool) {
@@ -46,13 +54,14 @@ contract ComplexVouchers {
         return false;
     }
 
+    /// check previous voucher for ordered voucher
     function checkOrderedVoucher(
         address _destination,
         bytes calldata _payload,
         uint256 _inputIndex,
         uint256 _outputIndex
     ) external {
-        //check if Previous voucher was executed
+        // check if Previous voucher was executed
         bool ok = ICartesiDApp(dapp).wasVoucherExecuted(
             _inputIndex,
             _outputIndex
@@ -67,26 +76,28 @@ contract ComplexVouchers {
         require(succ);
     }
 
+    /// execute a paid voucher
     function checkPaidVoucher(
         address _destination,
         bytes calldata _payload,
         uint256 amount
     ) external payable {
-        //execute the payable transfer
+        // execute the payable transfer
 
         (bool success, ) = tx.origin.call{value: amount}("");
         require(success, "failed to send payment");
-        //execute voucher
+        // execute voucher
         (bool succ, ) = _destination.call(_payload);
         require(succ);
     }
 
+    /// execute a targeted voucher
     function checkTargetedVoucher(
         address _destination,
         bytes calldata _payload,
         address[] calldata ValidAddress
     ) external {
-        //check if address is valid for this voucher
+        // check if address is valid for this voucher
         if (!_isAddressValid(ValidAddress)) {
             revert AddressNotValidForVoucher();
         }
@@ -96,12 +107,13 @@ contract ComplexVouchers {
         require(succ);
     }
 
+    /// execute an expirable voucher
     function checkExpirableVoucher(
         address _destination,
         bytes calldata _payload,
         uint256 _expiryTime
     ) external {
-        //check expirable date
+        // check expirable date
         if (_expiryTime <= block.timestamp) {
             revert VoucherExpiredNotAllowed();
         }
@@ -111,12 +123,13 @@ contract ComplexVouchers {
         require(succ);
     }
 
+    /// execute a future voucher
     function checkFutureVoucher(
         address _destination,
         bytes calldata _payload,
         uint256 _validDate
     ) external {
-        //check if it is time so voucher can be executed
+        // check if it is time so voucher can be executed
         if (block.timestamp < _validDate) {
             revert NotYetTimeForFutureVoucher();
         }
@@ -126,13 +139,13 @@ contract ComplexVouchers {
         require(succ);
     }
 
+    /// execute all types of complex vouchers. The executeAtomicVoucher functions receive a list of addresses and payloads
+    /// from the Dapp contract and execute them accordingly.
     function executeAtomicVoucher(
         bytes[] calldata _payloads,
         address[] calldata _destinations
-    ) external {
-        //check if this is beign executed by CartesiDApp
-        require(msg.sender == dapp);
-        //check if there is the same amount of addresses and payloads
+    ) external onlyDApp {
+        // check if there is the same amount of addresses and payloads
         require(_destinations.length == _payloads.length);
         // execute voucher sequence
         for (uint count = 0; count < _destinations.length; count++) {

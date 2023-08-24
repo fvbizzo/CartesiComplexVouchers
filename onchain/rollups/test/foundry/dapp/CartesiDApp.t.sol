@@ -66,6 +66,7 @@ contract CartesiDAppTest is TestBase {
     address constant tokenOwner = address(bytes20(keccak256("tokenOwner")));
     address constant recipient = address(bytes20(keccak256("recipient")));
     address constant noticeSender = address(bytes20(keccak256("noticeSender")));
+    address constant txOrigin = address(bytes20(keccak256("txOrigin")));
     bytes32 constant salt = keccak256("salt");
     bytes32 constant templateHash = keccak256("templateHash");
 
@@ -480,6 +481,7 @@ contract CartesiDAppTest is TestBase {
         executeVoucher(voucher, proof);
     }
 
+    // test expirable voucher
     function testExpirableComplex(
         uint256 _inputIndex,
         uint256 _numInputsAfter
@@ -487,73 +489,138 @@ contract CartesiDAppTest is TestBase {
         Voucher memory voucher = getVoucher(4);
         Proof memory proof = setupVoucherProof(4, _inputIndex, _numInputsAfter);
 
+        // assert the simple contract counter starting as 0
+        assertEq(simple.counter(), 0);
+
+        // move time foward after the expiration date
+        skip(2 hours);
+
+        // should fail to execute voucher after its expiration date
         bool success = executeVoucher(voucher, proof);
 
+        assertEq(success, false);
+
+        // go back in time before the expiration
+        rewind(2 hours);
+
+        // now the voucher is valid and should be executed
+        success = executeVoucher(voucher, proof);
+
         assertEq(success, true);
+        assertEq(simple.counter(), 1);
     }
 
+    // test targeted voucher
     function testTargetedComplex(
         uint256 _inputIndex,
         uint256 _numInputsAfter
     ) public {
-        Voucher memory voucher = getVoucher(5);
-        Proof memory proof = setupVoucherProof(5, _inputIndex, _numInputsAfter);
-
-        bool success = executeVoucher(voucher, proof);
-
-        assertEq(success, true);
-    }
-
-    function testPaidComplex(
-        uint256 _inputIndex,
-        uint256 _numInputsAfter
-    ) public {
+        
         Voucher memory voucher = getVoucher(6);
         Proof memory proof = setupVoucherProof(6, _inputIndex, _numInputsAfter);
 
-        vm.deal(address(complex), transferAmount);
+        // assert the simple contract counter starting as 0
+        assertEq(simple.counter(), 0);
 
+        vm.prank(address(this), address(0));
+
+        // try to execute a voucher that cannot be executed by the tx.origin
         bool success = executeVoucher(voucher, proof);
 
-        assertEq(success, true);
+        assertEq(success, false);
+
+        vm.prank(address(this), txOrigin);
+
+        // now execute a voucher that has the tx.origin address on the allowed addresses list
+        success = executeVoucher(voucher, proof);
+        assertEq(simple.counter(), 1);
     }
 
-    function testFutureComplex(
+    // test a paid voucher
+    function testPaidComplex(
         uint256 _inputIndex,
         uint256 _numInputsAfter
     ) public {
         Voucher memory voucher = getVoucher(7);
         Proof memory proof = setupVoucherProof(7, _inputIndex, _numInputsAfter);
 
+        // Fail to execute without any fund
+        assertEq(address(complex).balance, 0);
+        bool success = executeVoucher(voucher, proof);
+        assertEq(success, false);
+
+        uint256 amount  = tx.origin.balance;
+        
+        // give money to complex voucher for transfer
+        vm.deal(address(complex), transferAmount);
+
+        // assert the simple contract counter starting as 0
+        assertEq(simple.counter(), 0);
+
+        success = executeVoucher(voucher, proof);
+
+        // verify the execution of the voucher and the amount of ether transfered between the addresses
+        assertEq(success, true);
+        assertEq(simple.counter(), 1);
+        assertEq(address(complex).balance, 0);
+        assertEq(tx.origin.balance, amount + transferAmount);
+    }
+
+    // test a future voucher
+    function testFutureComplex(
+        uint256 _inputIndex,
+        uint256 _numInputsAfter
+    ) public {
+        Voucher memory voucher = getVoucher(8);
+        Proof memory proof = setupVoucherProof(8, _inputIndex, _numInputsAfter);
+
+        // assert the simple contract counter starting as 0
+        assertEq(simple.counter(), 0);
+
+        // Fail to execute voucher before the correct time
         bool success = executeVoucher(voucher, proof);
 
         assertEq(success, false);
 
-        vm.warp(block.timestamp + 2 hours);
+        // move foward 2 hours
+        skip(2 hours);
 
+        // now the voucher can be executed
         success = executeVoucher(voucher, proof);
 
         assertEq(success, true);
+        assertEq(simple.counter(), 1);
     }
 
+    // Test ordered voucher
     function testOrderedComplex() public {
-        Voucher memory voucher8 = getVoucher(8);
-        Proof memory proof8 = setupVoucherProof(8, 8, 0);
 
+        // create 2 vouchers and their proofs, voucher 9 can only be executed after voucher 8
         Voucher memory voucher9 = getVoucher(9);
         Proof memory proof9 = setupVoucherProof(9, 9, 0);
 
-        bool success = executeVoucher(voucher9, proof9);
+        Voucher memory voucher10 = getVoucher(10);
+        Proof memory proof10 = setupVoucherProof(10, 10, 0);
+
+        // assert the simple contract counter starting as 0
+        assertEq(simple.counter(), 0);
+
+        // try to execute voucher 10 and fail
+        bool success = executeVoucher(voucher10, proof10);
 
         assertEq(success, false);
 
-        success = executeVoucher(voucher8, proof8);
-
-        assertEq(success, true);
-
+        // execute voucher 9 and verify the simple counter incrementation
         success = executeVoucher(voucher9, proof9);
 
         assertEq(success, true);
+        assertEq(simple.counter(), 1);
+
+        // Now that voucher 9 has been executed, voucher 10 can also be executed
+        success = executeVoucher(voucher10, proof10);
+
+        assertEq(success, true);
+        assertEq(simple.counter(), 2);
     }
 
     // test migration
@@ -719,6 +786,7 @@ contract CartesiDAppTest is TestBase {
         addEtherTransferVoucher();
         addERC721TransferVoucher();
         addExpirableVoucher();
+        addTargetedFailedVoucher();
         addTargetedVoucher();
         addPaidVoucher();
         addFutureVoucher();
@@ -777,12 +845,37 @@ contract CartesiDAppTest is TestBase {
         ));
     }
 
+    function addTargetedFailedVoucher() internal {
+        address[] memory arrayAddress = new address[](1);
+        address[] memory possibleAddress = new address[](1);
+        bytes[] memory arrayPayloads = new bytes[](1);
+
+        possibleAddress[0] = address(complex);
+
+        arrayAddress[0] = address(complex);
+
+        arrayPayloads[0] = (
+            abi.encodeWithSignature(
+                "checkTargetedVoucher(address,bytes,address[])",
+                simple,
+                abi.encodeWithSelector(SimpleContract.inc.selector),
+                possibleAddress
+            )
+        );
+
+        addVoucher(address(complex), abi.encodeWithSignature(
+            "executeAtomicVoucher(bytes[],address[])",
+            arrayPayloads,
+            arrayAddress
+        ));
+    }
+
     function addTargetedVoucher() internal {
         address[] memory arrayAddress = new address[](1);
         address[] memory possibleAddress = new address[](1);
         bytes[] memory arrayPayloads = new bytes[](1);
 
-        possibleAddress[0] = tx.origin;
+        possibleAddress[0] = txOrigin;
 
         arrayAddress[0] = address(complex);
 
@@ -861,7 +954,7 @@ contract CartesiDAppTest is TestBase {
                 "checkOrderedVoucher(address,bytes,uint256,uint256)",
                 simple,
                 abi.encodeWithSelector(SimpleContract.inc.selector),
-                8,
+                9,
                 0
             )
         );
