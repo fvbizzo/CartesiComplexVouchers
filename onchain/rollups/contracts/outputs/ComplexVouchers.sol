@@ -42,7 +42,10 @@ contract ComplexVouchers {
         _;
     }
 
-    /// check for valid addresses for targeted vouchers
+    /// @notice Check for valid addresses for targeted vouchers.
+    /// @param validAddress The list of addresses which wich are allowed to execute this voucher
+    /// @dev This function verifies if the tx.origin address that is trying to execute a targeted voucher has been set
+    /// as a valid address.
     function _isAddressValid(
         address[] calldata validAddress
     ) public view returns (bool) {
@@ -54,13 +57,14 @@ contract ComplexVouchers {
         return false;
     }
 
-    /// check previous voucher for ordered voucher
+    /// @notice Check if previous voucher has been executed.
+    /// @param _inputIndex index input that is used in the ICartesiDApp to verify if a voucher has been executed
+    /// @param _outputIndex index output that is used in the ICartesiDApp to verify if a voucher has been executed
+    /// @dev This function receives a voucher inputIndex and outputIndex and revert if the voucher has not been executed.
     function checkOrderedVoucher(
-        address _destination,
-        bytes calldata _payload,
         uint256 _inputIndex,
         uint256 _outputIndex
-    ) external {
+    ) external view {
         // check if Previous voucher was executed
         bool ok = ICartesiDApp(dapp).wasVoucherExecuted(
             _inputIndex,
@@ -70,80 +74,66 @@ contract ComplexVouchers {
         if (!ok) {
             revert OrderedVoucherNeedsPreviousVoucher();
         }
-
-        // execute voucher
-        (bool succ, ) = _destination.call(_payload);
-        require(succ);
     }
 
-    /// execute a paid voucher
+    /// @notice A function that transfers ether to the tx.origin and can only be executed by this contract.
+    /// @param amount Transfer amount
+    /// @dev It receives an amount value and transfers it to the tx.origin.
     function checkPaidVoucher(
-        address _destination,
-        bytes calldata _payload,
         uint256 amount
-    ) external payable {
-        // execute the payable transfer
-
+    ) external {
+        // execute the paid transfer
+        require(msg.sender == address(this));
         (bool success, ) = tx.origin.call{value: amount}("");
         require(success, "failed to send payment");
-        // execute voucher
-        (bool succ, ) = _destination.call(_payload);
-        require(succ);
     }
 
-    /// execute a targeted voucher
+    /// @notice A function that receives an array of addresses and revert if the tx.origin is not included in that array.
+    /// @param ValidAddress Array of addresses that are permited to execute this voucher.
+    /// @dev It receives an array of addresses and call an auxiliary function to check if the tx.origin address is listed
+    /// in the array. Currently it assumes the array is not ordered.
     function checkTargetedVoucher(
-        address _destination,
-        bytes calldata _payload,
         address[] calldata ValidAddress
-    ) external {
+    ) external view {
         // check if address is valid for this voucher
         if (!_isAddressValid(ValidAddress)) {
             revert AddressNotValidForVoucher();
         }
-
-        // execute voucher
-        (bool succ, ) = _destination.call(_payload);
-        require(succ);
     }
 
-    /// execute an expirable voucher
+    /// @notice A function that checks the time of expiration of an expirable voucher.
+    /// @param _expiryTime voucher time of expiration.
+    /// @dev It checks if the execution atempt is before the voucher's expiration date.
     function checkExpirableVoucher(
-        address _destination,
-        bytes calldata _payload,
         uint256 _expiryTime
-    ) external {
+    ) external view {
         // check expirable date
         if (_expiryTime <= block.timestamp) {
             revert VoucherExpiredNotAllowed();
         }
-
-        // execute voucher
-        (bool succ, ) = _destination.call(_payload);
-        require(succ);
     }
 
-    /// execute a future voucher
+    /// @notice A function that checks the time of activation of a future voucher.
+    /// @param _validDate voucher time of activation.
+    /// @dev It checks if the execution atempt is after the voucher's activation date.
     function checkFutureVoucher(
-        address _destination,
-        bytes calldata _payload,
         uint256 _validDate
-    ) external {
+    ) external view {
         // check if it is time so voucher can be executed
         if (block.timestamp < _validDate) {
             revert NotYetTimeForFutureVoucher();
         }
-
-        // execute voucher
-        (bool succ, ) = _destination.call(_payload);
-        require(succ);
     }
 
-    /// execute all types of complex vouchers. The executeAtomicVoucher functions receive a list of addresses and payloads
-    /// from the Dapp contract and execute them accordingly.
+    /// @notice The main function of this contract it is called directly and only by the Dapp and executes all combinations
+    /// of complex vouchers.
+    /// @param _destinations Array of addresses with the destination of each payload.
+    /// @param _payloads Array of payloads that are to be executed by the voucher.
+    /// @dev This function receives 2 arrays that need to have the same size. It executes the payloads in order and
+    /// it reverts if at least one payload cant be executed.
     function executeAtomicVoucher(
-        bytes[] calldata _payloads,
-        address[] calldata _destinations
+        address[] calldata _destinations,
+        bytes[] calldata _payloads
     ) external onlyDApp {
         // check if there is the same amount of addresses and payloads
         require(_destinations.length == _payloads.length);
